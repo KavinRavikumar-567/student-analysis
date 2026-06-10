@@ -1,0 +1,16 @@
+# Node dependencies and caches
+node_modules/
+.vite/
+dist/
+
+# Python caches
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local

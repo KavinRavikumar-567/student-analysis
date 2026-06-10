@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background-color: #050710;
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  color: #ffffff;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(5, 7, 16, 0.6);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 160, 255, 0.25);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(179, 136, 255, 0.55);
+}
+
+/* Glassmorphism Cards styling */
+.glass-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(100, 160, 255, 0.15);
+  border-radius: 20px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.glass-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(179, 136, 255, 0.35);
+  box-shadow: 0 12px 40px 0 rgba(79, 195, 247, 0.15), inset 0 0 12px rgba(179, 136, 255, 0.05);
+}
+
+/* Base style resets */
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Animations */
+@keyframes cardEntrance {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-card-entrance {
+  animation: cardEntrance 400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-left {
+  animation: slideInLeft 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Pulse Glow Effects */
+.pulse-glow {
+  box-shadow: 0 0 15px rgba(79, 195, 247, 0.2);
+  animation: pulseGlow 2s infinite ease-in-out;
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(79, 195, 247, 0.2), inset 0 0 5px rgba(79, 195, 247, 0.1);
+    border-color: rgba(100, 160, 255, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(179, 136, 255, 0.45), inset 0 0 10px rgba(179, 136, 255, 0.2);
+    border-color: rgba(179, 136, 255, 0.45);
+  }
+}
+
+.text-glow-blue {
+  text-shadow: 0 0 12px rgba(79, 195, 247, 0.5);
+}
+
+.text-glow-violet {
+  text-shadow: 0 0 12px rgba(179, 136, 255, 0.5);
+}
+
+.text-glow-mint {
+  text-shadow: 0 0 12px rgba(105, 240, 174, 0.5);
+}
