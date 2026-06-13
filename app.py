@@ -583,6 +583,17 @@ filtered_df = filtered_df[
     (filtered_df['gpa'] <= selected_gpa_range[1])
 ]
 
+# Sidebar Download Section
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📥 Telemetry Reports")
+csv_filtered = filtered_df.to_csv(index=False).encode('utf-8')
+st.sidebar.download_button(
+    label="Download Current Dataset (CSV)",
+    data=csv_filtered,
+    file_name="cleaned_student_telemetry.csv",
+    mime="text/csv"
+)
+
 
 # ----------------------------------------------------
 # 7. Main Dashboard Area & Navbar
@@ -861,6 +872,15 @@ with st.container(border=True):
             return ['background-color: rgba(255, 82, 82, 0.12); color: #ff8a80; font-family: Inter; border: 1px solid rgba(255, 82, 82, 0.15);'] * len(row)
         
         styled_roster = roster_df.style.apply(highlight_at_risk_rows, axis=1)
+        
+        # Download button for at-risk roster
+        csv_roster = roster_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download At-Risk Roster (CSV)",
+            data=csv_roster,
+            file_name="at_risk_student_roster.csv",
+            mime="text/csv"
+        )
         
         # Render the styled dataframe full-width
         st.dataframe(
