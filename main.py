@@ -99,29 +99,58 @@ def auto_map_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
                 return col
         return None
 
-    mapping['student_id'] = find_match(['id', 'stu', 'code', 'number', 'roll'])
+    # More comprehensive keywords
+    mapping['student_id'] = find_match(['id', 'stu', 'code', 'roll', 'enroll', 'reg'])
     mapping['name'] = find_match(['name', 'student', 'full', 'first', 'last'])
-    mapping['department'] = find_match(['dept', 'dep', 'major', 'course', 'stream', 'branch'])
-    mapping['gpa'] = find_match(['gpa', 'grade', 'cgpa', 'points'], numeric_only=True) or find_match(['gpa', 'grade', 'cgpa', 'points'])
-    mapping['attendance_pct'] = find_match(['attend', 'presen', 'pct', 'ratio', '%'], numeric_only=True) or find_match(['attend', 'presen', 'pct', 'ratio', '%'])
+    mapping['department'] = find_match(['dept', 'dep', 'major', 'course', 'stream', 'branch', 'class'])
+    mapping['gpa'] = find_match(['gpa', 'grade', 'score', 'mark', 'cgpa', 'points', 'sgpa', 'percentage'], numeric_only=True) or \
+                     find_match(['gpa', 'grade', 'score', 'mark', 'cgpa', 'points', 'sgpa', 'percentage'])
+    mapping['attendance_pct'] = find_match(['attend', 'presen', 'pct', 'ratio', '%'], numeric_only=True) or \
+                                find_match(['attend', 'presen', 'pct', 'ratio', '%'])
     mapping['semester'] = find_match(['sem', 'term', 'period', 'year', 'session'])
+    
+    id_keywords = ['id', 'roll', 'code', 'enroll', 'reg', 'num']
     
     numeric_cols = [c for c in columns if pd.api.types.is_numeric_dtype(df[c])]
     text_cols = [c for c in columns if not pd.api.types.is_numeric_dtype(df[c])]
     
+    # 1. student_id fallback
     if not mapping['student_id']:
-        mapping['student_id'] = columns[0]
+        id_like = [c for c in columns if any(kw in c.lower() for kw in id_keywords)]
+        if id_like:
+            mapping['student_id'] = id_like[0]
+        else:
+            mapping['student_id'] = columns[0]
+            
+    # 2. name fallback
     if not mapping['name']:
         avail_text = [c for c in text_cols if c != mapping['student_id']]
         mapping['name'] = avail_text[0] if avail_text else columns[0]
+        
+    # 3. department fallback
     if not mapping['department']:
         avail_text = [c for c in text_cols if c not in [mapping['student_id'], mapping['name']]]
         mapping['department'] = avail_text[0] if avail_text else None
+        
+    # 4. gpa fallback (prevent mapping to student_id or roll number columns)
     if not mapping['gpa']:
-        mapping['gpa'] = numeric_cols[0] if numeric_cols else columns[0]
+        gpa_candidates = [c for c in numeric_cols if c != mapping['student_id'] and not any(kw in c.lower() for kw in id_keywords)]
+        if gpa_candidates:
+            mapping['gpa'] = gpa_candidates[0]
+        else:
+            other_numeric = [c for c in numeric_cols if c != mapping['student_id']]
+            mapping['gpa'] = other_numeric[0] if other_numeric else columns[0]
+            
+    # 5. attendance fallback (prevent mapping to GPA or student_id / roll numbers)
     if not mapping['attendance_pct']:
-        avail_num = [c for c in numeric_cols if c != mapping['gpa']]
-        mapping['attendance_pct'] = avail_num[0] if avail_num else (numeric_cols[0] if numeric_cols else columns[0])
+        att_candidates = [c for c in numeric_cols if c not in [mapping['gpa'], mapping['student_id']] and not any(kw in c.lower() for kw in id_keywords)]
+        if att_candidates:
+            mapping['attendance_pct'] = att_candidates[0]
+        else:
+            other_numeric = [c for c in numeric_cols if c not in [mapping['gpa'], mapping['student_id']]]
+            mapping['attendance_pct'] = other_numeric[0] if other_numeric else (numeric_cols[0] if numeric_cols else columns[0])
+            
+    # 6. semester fallback
     if not mapping['semester']:
         avail_text = [c for c in text_cols if c not in [mapping['student_id'], mapping['name'], mapping['department']]]
         mapping['semester'] = avail_text[0] if avail_text else None
@@ -157,10 +186,13 @@ def prepare_data(raw_df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> pd.
     if gpa_col and gpa_col in raw_df.columns:
         val = pd.to_numeric(raw_df[gpa_col], errors='coerce').fillna(0.0)
         max_val = val.max()
-        if 2.0 < max_val <= 4.2:
-            val = val * (10.0 / 4.0)
-        elif 12.0 < max_val <= 100.0:
-            val = val * (10.0 / 100.0)
+        if max_val > 0.0:
+            if 2.0 < max_val <= 4.2:
+                val = val * (10.0 / 4.0)
+            elif 12.0 < max_val <= 100.0:
+                val = val * (10.0 / 100.0)
+            elif max_val > 100.0:
+                val = (val / max_val) * 10.0
         prepared['gpa'] = np.round(val, 2)
     else:
         prepared['gpa'] = 7.0
@@ -170,8 +202,11 @@ def prepare_data(raw_df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> pd.
     if att_col and att_col in raw_df.columns:
         val = pd.to_numeric(raw_df[att_col], errors='coerce').fillna(0.0)
         max_val = val.max()
-        if 0.0 <= max_val <= 1.05:
-            val = val * 100.0
+        if max_val > 0.0:
+            if 0.0 <= max_val <= 1.05:
+                val = val * 100.0
+            elif max_val > 100.0:
+                val = (val / max_val) * 100.0
         prepared['attendance_pct'] = np.round(val, 1)
     else:
         prepared['attendance_pct'] = 80.0
@@ -187,8 +222,12 @@ def prepare_data(raw_df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> pd.
     exam_col = next((c for c in raw_df.columns if 'exam' in c.lower() or 'score' in c.lower() or 'grade' in c.lower()), None)
     if exam_col and exam_col != gpa_col:
         val = pd.to_numeric(raw_df[exam_col], errors='coerce').fillna(0.0)
-        if val.max() <= 10.0:
-            val = val * 10.0
+        max_val = val.max()
+        if max_val > 0.0:
+            if max_val <= 10.0:
+                val = val * 10.0
+            elif max_val > 100.0:
+                val = (val / max_val) * 100.0
         prepared['exam_score'] = np.round(val, 1)
     else:
         prepared['exam_score'] = np.clip(prepared['gpa'] * 9.5 + np.random.normal(0, 5, len(raw_df)), 0.0, 100.0).round(1)
@@ -196,8 +235,12 @@ def prepare_data(raw_df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> pd.
     assign_col = next((c for c in raw_df.columns if 'assign' in c.lower() or 'hw' in c.lower() or 'project' in c.lower()), None)
     if assign_col:
         val = pd.to_numeric(raw_df[assign_col], errors='coerce').fillna(0.0)
-        if val.max() <= 10.0:
-            val = val * 10.0
+        max_val = val.max()
+        if max_val > 0.0:
+            if max_val <= 10.0:
+                val = val * 10.0
+            elif max_val > 100.0:
+                val = (val / max_val) * 100.0
         prepared['assignment_score'] = np.round(val, 1)
     else:
         prepared['assignment_score'] = np.clip(prepared['attendance_pct'] * 0.35 + prepared['gpa'] * 6.2 + np.random.normal(0, 5, len(raw_df)), 0.0, 100.0).round(1)
