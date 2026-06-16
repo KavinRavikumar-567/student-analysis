@@ -62,7 +62,7 @@ const App = () => {
 
       {/* 6. Footer Copyright */}
       <footer className="py-5 border-t border-white/[0.04] bg-[#050710]/50 text-center text-[10px] text-gray-500 font-mono tracking-widest relative z-20">
-        &copy; {new Date().getFullYear()} DATAORBIT SPACE ACADEMY. ALL METRICS ALIGNED.
+        &copy; {new Date().getFullYear()} @ KAVIN PROJECTS 2026
       </footer>
     </div>
   );
