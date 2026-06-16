@@ -10,7 +10,6 @@ import {
   Award, 
   Brain, 
   Layers, 
-  ArrowLeft, 
   MessageSquare,
   Sparkles,
   Percent,
@@ -185,13 +184,7 @@ const InsightsView = () => {
             <Download className="w-4 h-4" />
             Download Report
           </button>
-          <button
-            onClick={resetApp}
-            className="flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl bg-white/[0.04] border border-electricBlue/15 hover:bg-white/[0.08] hover:border-electricBlue/30 text-white transition-all w-full sm:w-auto"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Upload New
-          </button>
+
           <button
             onClick={() => setIsChatOpen(true)}
             className="flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl bg-gradient-to-r from-electricBlue to-accentViolet text-spaceBg hover:brightness-110 active:scale-95 shadow-[0_0_15px_rgba(79,195,247,0.2)] transition-all w-full sm:w-auto"

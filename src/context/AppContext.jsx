@@ -16,7 +16,7 @@ export const AppProvider = ({ children }) => {
     }
   ]);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentView, setCurrentView] = useState('upload'); // 'upload' | 'insights'
+  const [currentView, setCurrentView] = useState('insights'); // 'upload' | 'insights'
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
 
@@ -146,7 +146,7 @@ export const AppProvider = ({ children }) => {
     setSqlQuery('');
     setSqlError(null);
     setIsLoading(true);
-    setCurrentView('upload');
+    setCurrentView('insights');
     try {
       // Re-fetch default insights to reset backend
       const response = await axios.get(`${API_BASE}/insights`);

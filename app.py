@@ -966,61 +966,8 @@ def update_from_sidebar():
 # ----------------------------------------------------
 st.sidebar.markdown("### 🪐 Space Navigation")
 
-# CSV File Uploader
-uploaded_file_sidebar = st.sidebar.file_uploader("Upload Student CSV", type=['csv'], key="sidebar_file_uploader")
-uploaded_file_main = st.session_state.get("main_file_uploader", None)
-
-uploaded_file = uploaded_file_main if uploaded_file_main is not None else uploaded_file_sidebar
-
-# Dynamic Data Loading
-if uploaded_file is not None:
-    try:
-        raw_df = pd.read_csv(uploaded_file)
-        
-        # Setup initial guesses
-        initial_mapping = auto_map_columns(raw_df)
-        
-        # Schema override expander
-        with st.sidebar.expander("⚙️ CSV Schema Mapping", expanded=False):
-            st.markdown("<p style='font-size: 0.85rem; color: #4a607a;'>We auto-detected these columns. Adjust if needed:</p>", unsafe_allow_html=True)
-            
-            sel_id = st.selectbox("Student ID", raw_df.columns, index=safe_index(list(raw_df.columns), initial_mapping['student_id']))
-            sel_name = st.selectbox("Name", raw_df.columns, index=safe_index(list(raw_df.columns), initial_mapping['name']))
-            
-            # Optional department
-            dept_opts = ["None (Force 'General')"] + list(raw_df.columns)
-            dept_idx = safe_index(list(raw_df.columns), initial_mapping['department']) + 1 if initial_mapping['department'] else 0
-            sel_dept_choice = st.selectbox("Department", dept_opts, index=dept_idx)
-            sel_dept = None if sel_dept_choice == "None (Force 'General')" else sel_dept_choice
-            
-            # Numeric fields
-            sel_gpa = st.selectbox("GPA", raw_df.columns, index=safe_index(list(raw_df.columns), initial_mapping['gpa']))
-            sel_att = st.selectbox("Attendance %", raw_df.columns, index=safe_index(list(raw_df.columns), initial_mapping['attendance_pct']))
-            
-            # Optional Semester
-            sem_opts = ["None (Force 'Default Semester')"] + list(raw_df.columns)
-            sem_idx = safe_index(list(raw_df.columns), initial_mapping['semester']) + 1 if initial_mapping['semester'] else 0
-            sel_sem_choice = st.selectbox("Semester", sem_opts, index=sem_idx)
-            sel_sem = None if sel_sem_choice == "None (Force 'Default Semester')" else sel_sem_choice
-            
-        custom_mapping = {
-            'student_id': sel_id,
-            'name': sel_name,
-            'department': sel_dept,
-            'gpa': sel_gpa,
-            'attendance_pct': sel_att,
-            'semester': sel_sem
-        }
-        
-        df = prepare_data(raw_df, custom_mapping)
-        st.sidebar.success("✅ File compiled successfully!")
-        
-    except Exception as e:
-        st.sidebar.error(f"❌ Error loading CSV: {str(e)}")
-        st.sidebar.info("Falling back to Space Mock Data.")
-        df = generate_mock_data()
-else:
-    df = generate_mock_data()
+# Load mock data directly
+df = generate_mock_data()
 
 # Collect dynamic options for filters
 depts_list = sorted(list(df['department'].unique()))
@@ -1118,14 +1065,7 @@ with navbar_cols[1]:
         label_visibility="collapsed"
     )
 
-# Main page subtle file uploader
-with st.expander("📥 Import/Upload New CSV Document", expanded=False):
-    st.file_uploader(
-        "Upload Student CSV", 
-        type=['csv'], 
-        key="main_file_uploader",
-        label_visibility="collapsed"
-    )
+
 
 # ----------------------------------------------------
 # 8. KPI Cards Row

@@ -1,20 +1,18 @@
 import React from 'react';
 import { useApp } from './context/AppContext';
 import StarField from './components/StarField';
-import UploadView from './components/UploadView';
 import InsightsView from './components/InsightsView';
 import ChatView from './components/ChatView';
 import { 
   Orbit, 
   MessageSquare, 
-  UploadCloud, 
   BarChart3, 
   Radio, 
   Cpu 
 } from 'lucide-react';
 
 const App = () => {
-  const { currentView, setCurrentView, isChatOpen, setIsChatOpen, fileInfo, insights } = useApp();
+  const { isChatOpen, setIsChatOpen, fileInfo } = useApp();
 
   return (
     <div className="relative min-h-screen flex flex-col font-space select-none">
@@ -47,34 +45,6 @@ const App = () => {
           </div>
         </div>
 
-        {/* Dynamic Navigation Tabs */}
-        {insights && (
-          <nav className="hidden md:flex items-center bg-white/[0.03] border border-white/5 p-1 rounded-xl">
-            <button
-              onClick={() => setCurrentView('upload')}
-              className={`flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg transition-all ${
-                currentView === 'upload'
-                  ? 'bg-electricBlue text-spaceBg shadow-[0_0_12px_rgba(79,195,247,0.3)]'
-                  : 'text-gray-400 hover:text-white hover:bg-white/[0.02]'
-              }`}
-            >
-              <UploadCloud className="w-3.5 h-3.5" />
-              Upload Console
-            </button>
-            <button
-              onClick={() => setCurrentView('insights')}
-              className={`flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg transition-all ${
-                currentView === 'insights'
-                  ? 'bg-electricBlue text-spaceBg shadow-[0_0_12px_rgba(79,195,247,0.3)]'
-                  : 'text-gray-400 hover:text-white hover:bg-white/[0.02]'
-              }`}
-            >
-              <BarChart3 className="w-3.5 h-3.5" />
-              Insights Dashboard
-            </button>
-          </nav>
-        )}
-
         {/* Chat Control Trigger */}
         <div className="flex items-center space-x-3">
           {fileInfo && (
@@ -105,7 +75,7 @@ const App = () => {
 
       {/* 3. Main Operational Deck */}
       <main className="flex-1 flex flex-col justify-start relative z-10 w-full">
-        {currentView === 'upload' ? <UploadView /> : <InsightsView />}
+        <InsightsView />
       </main>
 
       {/* 4. Slide-in Conversational Console */}
