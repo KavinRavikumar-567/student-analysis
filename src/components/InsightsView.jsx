@@ -10,7 +10,6 @@ import {
   Award, 
   Brain, 
   Layers, 
-  MessageSquare,
   Sparkles,
   Percent,
   GraduationCap,
@@ -68,7 +67,6 @@ const InsightsView = () => {
   const { 
     insights, 
     resetApp, 
-    setIsChatOpen, 
     fileInfo,
     sqlQuery,
     setSqlQuery,
@@ -185,13 +183,7 @@ const InsightsView = () => {
             Download Report
           </button>
 
-          <button
-            onClick={() => setIsChatOpen(true)}
-            className="flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl bg-gradient-to-r from-electricBlue to-accentViolet text-spaceBg hover:brightness-110 active:scale-95 shadow-[0_0_15px_rgba(79,195,247,0.2)] transition-all w-full sm:w-auto"
-          >
-            <MessageSquare className="w-4 h-4" />
-            Query AI Agent
-          </button>
+
         </div>
       </div>
 
