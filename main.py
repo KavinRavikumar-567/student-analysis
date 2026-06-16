@@ -1,4 +1,6 @@
 import io
+import re
+import sqlite3
 import math
 import numpy as np
 import pandas as pd
@@ -420,6 +422,465 @@ async def get_insights():
         "factors": factors_list,
         "distributions": distributions,
         "insight_cards": insight_cards[:4]
+    }
+
+
+def translate_nlp_to_sql(nlp_query: str, df: pd.DataFrame) -> tuple[str, str]:
+    nlp_query_lower = nlp_query.lower().strip()
+    
+    # Extract unique categories dynamically
+    depts = [str(d) for d in df['department'].unique() if pd.notna(d)] if 'department' in df.columns else []
+    sems = [str(s) for s in df['semester'].unique() if pd.notna(s)] if 'semester' in df.columns else []
+    stu_ids = [str(i) for i in df['student_id'].unique() if pd.notna(i)] if 'student_id' in df.columns else []
+    stu_names = [str(n) for n in df['name'].unique() if pd.notna(n)] if 'name' in df.columns else []
+    
+    select_clause = "SELECT *"
+    where_conditions = []
+    order_clause = ""
+    limit_clause = ""
+    explanation_parts = []
+    
+    col_clean = {
+        'student_id': 'Student ID',
+        'name': 'Student Name',
+        'department': 'Department',
+        'gpa': 'GPA',
+        'attendance_pct': 'Attendance %',
+        'exam_score': 'Exam Score',
+        'assignment_score': 'Assignment Score',
+        'semester': 'Semester'
+    }
+    
+    # Determine the select operation
+    is_avg = any(kw in nlp_query_lower for kw in ["average", "avg", "mean"])
+    is_count = any(kw in nlp_query_lower for kw in ["how many", "count", "number of", "total count", "amount of"])
+    is_sum = any(kw in nlp_query_lower for kw in ["sum", "total sum"])
+    
+    # Identify target column for numeric aggregation
+    target_col = None
+    if "gpa" in nlp_query_lower:
+        target_col = "gpa"
+    elif "attendance" in nlp_query_lower or "present" in nlp_query_lower:
+        target_col = "attendance_pct"
+    elif "exam" in nlp_query_lower:
+        target_col = "exam_score"
+    elif "assignment" in nlp_query_lower or "hw" in nlp_query_lower or "project" in nlp_query_lower:
+        target_col = "assignment_score"
+        
+    if is_count:
+        select_clause = "SELECT COUNT(*) AS total_students"
+        explanation_parts.append("counting the total number of students")
+    elif is_avg and target_col:
+        select_clause = f"SELECT AVG({target_col}) AS average_{target_col}"
+        explanation_parts.append(f"calculating the average {col_clean[target_col]}")
+    elif is_sum and target_col:
+        select_clause = f"SELECT SUM({target_col}) AS sum_{target_col}"
+        explanation_parts.append(f"calculating the sum of {col_clean[target_col]}")
+    else:
+        # User is requesting records
+        cols_requested = []
+        if any(kw in nlp_query_lower for kw in ["show names", "list names", "name of", "who is", "who has", "identify"]):
+            cols_requested.append("name")
+        if "gpa" in nlp_query_lower:
+            cols_requested.append("gpa")
+        if "attendance" in nlp_query_lower:
+            cols_requested.append("attendance_pct")
+        if "exam" in nlp_query_lower:
+            cols_requested.append("exam_score")
+        if "assignment" in nlp_query_lower or "hw" in nlp_query_lower or "project" in nlp_query_lower:
+            cols_requested.append("assignment_score")
+        if "department" in nlp_query_lower or "major" in nlp_query_lower:
+            cols_requested.append("department")
+        if "semester" in nlp_query_lower:
+            cols_requested.append("semester")
+            
+        if cols_requested:
+            if "name" not in cols_requested:
+                cols_requested.insert(0, "name")
+            if "student_id" not in cols_requested:
+                cols_requested.insert(0, "student_id")
+            # De-duplicate
+            cols_requested = list(dict.fromkeys(cols_requested))
+            select_clause = f"SELECT {', '.join(cols_requested)}"
+            explanation_parts.append(f"retrieving {', '.join([col_clean.get(c, c) for c in cols_requested])}")
+        else:
+            select_clause = "SELECT student_id, name, department, gpa, attendance_pct, exam_score, assignment_score, semester"
+            explanation_parts.append("retrieving student records")
+
+    # 1. Filter by Department (with word boundary, supporting abbreviations)
+    dept_map = {
+        "cs": "Computer Science",
+        "comp sci": "Computer Science",
+        "ds": "Data Science",
+        "data sci": "Data Science",
+        "math": "Mathematics",
+        "maths": "Mathematics",
+        "physics": "Physics",
+        "eng": "Engineering"
+    }
+    
+    matched_depts = []
+    # Try exact matches from dataset
+    for d in depts:
+        pattern = r'\b' + re.escape(d.lower()) + r'\b'
+        if re.search(pattern, nlp_query_lower):
+            matched_depts.append(d)
+            
+    # Try abbreviation matches if no exact match found
+    if not matched_depts:
+        for abbrev, full_name in dept_map.items():
+            if re.search(r'\b' + re.escape(abbrev) + r'\b', nlp_query_lower):
+                if full_name in depts:
+                    matched_depts.append(full_name)
+                    break
+                    
+    if matched_depts:
+        matched_depts = sorted(matched_depts, key=len, reverse=True)
+        actual_match = matched_depts[0]
+        where_conditions.append(f"department = '{actual_match}'")
+        explanation_parts.append(f"filtering for department '{actual_match}'")
+
+    # 2. Filter by Semester (supporting abbreviations like 'fall 25' -> 'Fall 2025')
+    matched_sems = []
+    for s in sems:
+        pattern = r'\b' + re.escape(s.lower()) + r'\b'
+        if re.search(pattern, nlp_query_lower):
+            matched_sems.append(s)
+            
+    # Try short year format matching if no exact matches (e.g., "fall 25" -> "Fall 2025")
+    if not matched_sems:
+        for s in sems:
+            s_clean = s.lower()
+            year_match = re.search(r'20(\d{2})', s_clean)
+            if year_match:
+                year_short = year_match.group(1)
+                season = s_clean.split()[0]
+                short_pattern = r'\b' + re.escape(season) + r'\s+' + re.escape(year_short) + r'\b'
+                if re.search(short_pattern, nlp_query_lower):
+                    matched_sems.append(s)
+                    break
+                    
+    if matched_sems:
+        actual_match = matched_sems[0]
+        where_conditions.append(f"semester = '{actual_match}'")
+        explanation_parts.append(f"filtering for semester '{actual_match}'")
+
+    # 3. Filter by Student ID
+    id_match = re.search(r'\bstu\d+\b', nlp_query_lower)
+    if id_match:
+        matched_id = id_match.group(0).upper()
+        where_conditions.append(f"student_id = '{matched_id}'")
+        explanation_parts.append(f"filtering for student ID '{matched_id}'")
+    else:
+        # Filter by Name
+        for n in stu_names:
+            if n.lower() in nlp_query_lower:
+                where_conditions.append(f"name = '{n}'")
+                explanation_parts.append(f"filtering for student named '{n}'")
+                break
+
+    # Extract limit value and exclude it from conditional filters
+    limit_val = 1
+    top_x_match = re.search(r'\b(?:top|best|lowest|bottom|first|last|limit)\s+(\d+)\b', nlp_query_lower)
+    limit_number_str = None
+    if top_x_match:
+        limit_val = int(top_x_match.group(1))
+        limit_number_str = top_x_match.group(1)
+
+    # Extract comparisons with numbers (excluding the limit quantity number)
+    all_numbers = re.findall(r'\b\d+(?:\.\d+)?\b', nlp_query_lower)
+    numbers = []
+    limit_excluded = False
+    for num in all_numbers:
+        if limit_number_str and num == limit_number_str and not limit_excluded:
+            limit_excluded = True
+            continue
+        numbers.append(num)
+    
+    def parse_operator(query_slice):
+        if any(kw in query_slice for kw in ["greater than or equal", "at least", "minimum of", "min of", ">="]):
+            return ">=", "greater than or equal to"
+        if any(kw in query_slice for kw in ["less than or equal", "at most", "maximum of", "max of", "<="]):
+            return "<=", "less than or equal to"
+        if any(kw in query_slice for kw in ["greater than", "more than", "above", "higher than", "over", "exceed", ">"]):
+            return ">", "greater than"
+        if any(kw in query_slice for kw in ["less than", "below", "under", "lower than", "poorer than", "<"]):
+            return "<", "less than"
+        if any(kw in query_slice for kw in ["equal to", "equals", "is", "="]):
+            return "=", "equal to"
+        return ">", "greater than"
+
+    # Handle "between X and Y" queries
+    between_match = re.search(r'between\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)', nlp_query_lower)
+    if between_match:
+        val1 = float(between_match.group(1))
+        val2 = float(between_match.group(2))
+        
+        # Sort values
+        v_min = min(val1, val2)
+        v_max = max(val1, val2)
+        
+        # Determine column target
+        if v_max <= 10.0 and any(kw in nlp_query_lower for kw in ['gpa', 'cgpa', 'grade']):
+            where_conditions.append(f"gpa >= {v_min} AND gpa <= {v_max}")
+            explanation_parts.append(f"GPA between {v_min} and {v_max}")
+            numbers = [num for num in numbers if num != between_match.group(1) and num != between_match.group(2)]
+        elif any(kw in nlp_query_lower for kw in ['attendance', 'present', 'attend']):
+            where_conditions.append(f"attendance_pct >= {v_min} AND attendance_pct <= {v_max}")
+            explanation_parts.append(f"Attendance % between {v_min}% and {v_max}%")
+            numbers = [num for num in numbers if num != between_match.group(1) and num != between_match.group(2)]
+        elif any(kw in nlp_query_lower for kw in ['exam', 'test', 'marks']):
+            where_conditions.append(f"exam_score >= {v_min} AND exam_score <= {v_max}")
+            explanation_parts.append(f"Exam Score between {v_min}% and {v_max}%")
+            numbers = [num for num in numbers if num != between_match.group(1) and num != between_match.group(2)]
+        elif any(kw in nlp_query_lower for kw in ['assignment', 'project', 'hw', 'homework']):
+            where_conditions.append(f"assignment_score >= {v_min} AND assignment_score <= {v_max}")
+            explanation_parts.append(f"Assignment Score between {v_min}% and {v_max}%")
+            numbers = [num for num in numbers if num != between_match.group(1) and num != between_match.group(2)]
+
+    # Standard GPA condition
+    if any(kw in nlp_query_lower for kw in ['gpa', 'cgpa', 'grade']):
+        gpa_idx = nlp_query_lower.find('gpa')
+        if gpa_idx == -1:
+            gpa_idx = nlp_query_lower.find('cgpa')
+        if gpa_idx == -1:
+            gpa_idx = nlp_query_lower.find('grade')
+            
+        gpa_val = None
+        min_dist = 9999
+        for n in numbers:
+            fval = float(n)
+            if fval <= 10.0:
+                n_idx = nlp_query_lower.find(n)
+                dist = abs(n_idx - gpa_idx)
+                if dist < min_dist:
+                    min_dist = dist
+                    gpa_val = fval
+        if gpa_val is not None:
+            n_str = str(int(gpa_val)) if gpa_val.is_integer() else str(gpa_val)
+            n_idx = nlp_query_lower.find(n_str)
+            start = min(gpa_idx, n_idx)
+            end = max(gpa_idx, n_idx)
+            slice_text = nlp_query_lower[start:end]
+            op, op_desc = parse_operator(slice_text)
+            
+            where_conditions.append(f"gpa {op} {n_str}")
+            explanation_parts.append(f"GPA {op_desc} {n_str}")
+
+    # Standard Attendance condition
+    if any(kw in nlp_query_lower for kw in ['attendance', 'present', 'attend']):
+        att_idx = nlp_query_lower.find('attendance')
+        if att_idx == -1:
+            att_idx = nlp_query_lower.find('present')
+        if att_idx == -1:
+            att_idx = nlp_query_lower.find('attend')
+            
+        att_val = None
+        min_dist = 9999
+        for n in numbers:
+            fval = float(n)
+            if fval > 10.0 or fval <= 1.0:
+                if fval <= 1.0:
+                    fval = fval * 100.0
+                n_idx = nlp_query_lower.find(n)
+                dist = abs(n_idx - att_idx)
+                if dist < min_dist:
+                    min_dist = dist
+                    att_val = fval
+        if att_val is not None:
+            n_str = str(int(att_val)) if att_val.is_integer() else str(att_val)
+            orig_n_strs = [n for n in numbers if float(n) == att_val or (float(n)*100.0 == att_val)]
+            if orig_n_strs:
+                orig_n_str = orig_n_strs[0]
+                n_idx = nlp_query_lower.find(orig_n_str)
+                start = min(att_idx, n_idx)
+                end = max(att_idx, n_idx)
+                slice_text = nlp_query_lower[start:end]
+                op, op_desc = parse_operator(slice_text)
+                
+                where_conditions.append(f"attendance_pct {op} {n_str}")
+                explanation_parts.append(f"Attendance % {op_desc} {n_str}%")
+
+    # Standard Exam score condition
+    if any(kw in nlp_query_lower for kw in ['exam', 'test', 'midterm', 'marks']):
+        exam_idx = nlp_query_lower.find('exam')
+        if exam_idx == -1:
+            exam_idx = nlp_query_lower.find('test')
+        if exam_idx == -1:
+            exam_idx = nlp_query_lower.find('marks')
+            
+        exam_val = None
+        min_dist = 9999
+        for n in numbers:
+            fval = float(n)
+            if fval > 10.0:
+                n_idx = nlp_query_lower.find(n)
+                dist = abs(n_idx - exam_idx)
+                if dist < min_dist:
+                    min_dist = dist
+                    exam_val = fval
+        if exam_val is not None:
+            n_str = str(int(exam_val)) if exam_val.is_integer() else str(exam_val)
+            n_idx = nlp_query_lower.find(n_str)
+            start = min(exam_idx, n_idx)
+            end = max(exam_idx, n_idx)
+            slice_text = nlp_query_lower[start:end]
+            op, op_desc = parse_operator(slice_text)
+            
+            where_conditions.append(f"exam_score {op} {n_str}")
+            explanation_parts.append(f"Exam Score {op_desc} {n_str}%")
+
+    # Standard Assignment score condition
+    if any(kw in nlp_query_lower for kw in ['assignment', 'project', 'hw', 'homework']):
+        assign_idx = nlp_query_lower.find('assignment')
+        if assign_idx == -1:
+            assign_idx = nlp_query_lower.find('project')
+        if assign_idx == -1:
+            assign_idx = nlp_query_lower.find('hw')
+            
+        assign_val = None
+        min_dist = 9999
+        for n in numbers:
+            fval = float(n)
+            if fval > 10.0:
+                n_idx = nlp_query_lower.find(n)
+                dist = abs(n_idx - assign_idx)
+                if dist < min_dist:
+                    min_dist = dist
+                    assign_val = fval
+        if assign_val is not None:
+            n_str = str(int(assign_val)) if assign_val.is_integer() else str(assign_val)
+            n_idx = nlp_query_lower.find(n_str)
+            start = min(assign_idx, n_idx)
+            end = max(assign_idx, n_idx)
+            slice_text = nlp_query_lower[start:end]
+            op, op_desc = parse_operator(slice_text)
+            
+            where_conditions.append(f"assignment_score {op} {n_str}")
+            explanation_parts.append(f"Assignment Score {op_desc} {n_str}%")
+
+    # Sorting & Extremes (ORDER BY and LIMIT)
+    is_highest = any(kw in nlp_query_lower for kw in ["highest", "top", "best", "maximum", "max", "greatest", "most", "high"])
+    is_lowest = any(kw in nlp_query_lower for kw in ["lowest", "bottom", "worst", "minimum", "min", "poorest", "least", "low"])
+    
+    order_col = None
+    if "gpa" in nlp_query_lower:
+        order_col = "gpa"
+    elif "attendance" in nlp_query_lower or "present" in nlp_query_lower:
+        order_col = "attendance_pct"
+    elif "exam" in nlp_query_lower:
+        order_col = "exam_score"
+    elif "assignment" in nlp_query_lower or "hw" in nlp_query_lower or "project" in nlp_query_lower:
+        order_col = "assignment_score"
+        
+    if (is_highest or is_lowest) and not order_col:
+        order_col = "gpa"
+        
+    if order_col:
+        has_explicit_limit = top_x_match is not None
+        is_singular_superlative = any(kw in nlp_query_lower for kw in ["highest", "lowest", "best", "worst", "maximum", "minimum", "greatest", "least", "who is", "who has"])
+        
+        if is_lowest:
+            order_clause = f" ORDER BY {order_col} ASC"
+            if has_explicit_limit or is_singular_superlative:
+                limit_clause = f" LIMIT {limit_val}"
+                explanation_parts.append(f"ordered by lowest {col_clean[order_col]} (bottom {limit_val})")
+            else:
+                explanation_parts.append(f"ordered by lowest {col_clean[order_col]}")
+        elif is_highest:
+            order_clause = f" ORDER BY {order_col} DESC"
+            if has_explicit_limit or is_singular_superlative:
+                limit_clause = f" LIMIT {limit_val}"
+                explanation_parts.append(f"ordered by highest {col_clean[order_col]} (top {limit_val})")
+            else:
+                explanation_parts.append(f"ordered by highest {col_clean[order_col]}")
+
+    # Construct complete SQL Query
+    sql_query = select_clause + " FROM students"
+    if where_conditions:
+        sql_query += " WHERE " + " AND ".join(where_conditions)
+    if order_clause:
+        sql_query += order_clause
+    if limit_clause:
+        sql_query += limit_clause
+        
+    sql_query += ";"
+    
+    if explanation_parts:
+        explanation = "Generated SQL query by " + ", and ".join(explanation_parts) + "."
+    else:
+        explanation = "Generated default query listing student records."
+        
+    return sql_query, explanation
+
+
+def execute_sql_query(sql_query: str, df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    try:
+        conn = sqlite3.connect(':memory:')
+        df.to_sql('students', conn, index=False, if_exists='replace')
+        
+        res_df = pd.read_sql_query(sql_query, conn)
+        conn.close()
+        
+        if res_df.empty:
+            answer = "No records matched the query criteria."
+        elif len(res_df) == 1 and len(res_df.columns) == 1:
+            val = res_df.iloc[0, 0]
+            col_name = res_df.columns[0]
+            if "avg" in col_name or "average" in col_name:
+                answer = f"The average value is {val:.2f}."
+            elif "count" in col_name or "total" in col_name:
+                answer = f"The total count is {val}."
+            elif "sum" in col_name:
+                answer = f"The total sum is {val:.2f}."
+            else:
+                answer = f"The result is {val}."
+        elif len(res_df) == 1:
+            row_dict = res_df.iloc[0].to_dict()
+            details = ", ".join([f"{k}: {v}" for k, v in row_dict.items()])
+            answer = f"Found 1 matching record: {details}."
+        else:
+            answer = f"Retrieved {len(res_df)} matching records."
+            
+        return res_df, answer
+    except Exception as e:
+        return pd.DataFrame(), f"SQL execution error: {str(e)}"
+
+
+class SQLQueryRequest(BaseModel):
+    query: str
+
+
+@app.post("/sql-query")
+async def sql_query(request: SQLQueryRequest):
+    df = state["df"]
+    if df is None or len(df) == 0:
+        df = generate_mock_data()
+        state["df"] = df
+        
+    query_text = request.query.strip()
+    is_raw_sql = query_text.lower().startswith("select")
+    
+    if is_raw_sql:
+        sql_query = query_text
+        explanation = "Executed custom user SQL query."
+    else:
+        sql_query, explanation = translate_nlp_to_sql(query_text, df)
+        
+    res_df, answer = execute_sql_query(sql_query, df)
+    
+    # Convert res_df to list of dicts for JSON response
+    res_df = res_df.replace({np.nan: None, np.inf: None, -np.inf: None})
+    records = res_df.to_dict(orient="records")
+    columns = list(res_df.columns)
+    
+    return {
+        "sql_query": sql_query,
+        "explanation": explanation,
+        "columns": columns,
+        "records": records,
+        "answer": answer,
+        "success": not res_df.empty or answer != "No records matched the query criteria."
     }
 
 

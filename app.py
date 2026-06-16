@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import re
+import sqlite3
 
 # Set Page Config
 st.set_page_config(
@@ -31,73 +33,458 @@ stars_1 = generate_stars_css(100)
 stars_2 = generate_stars_css(70)
 stars_3 = generate_stars_css(45)
 
-# Inject custom space theme CSS
+def translate_nlp_to_sql(nlp_query: str, df: pd.DataFrame) -> tuple[str, str]:
+    nlp_query_lower = nlp_query.lower().strip()
+    
+    # Extract unique categories dynamically
+    depts = [str(d) for d in df['department'].unique() if pd.notna(d)] if 'department' in df.columns else []
+    sems = [str(s) for s in df['semester'].unique() if pd.notna(s)] if 'semester' in df.columns else []
+    stu_ids = [str(i) for i in df['student_id'].unique() if pd.notna(i)] if 'student_id' in df.columns else []
+    stu_names = [str(n) for n in df['name'].unique() if pd.notna(n)] if 'name' in df.columns else []
+    
+    select_clause = "SELECT *"
+    where_conditions = []
+    order_clause = ""
+    limit_clause = ""
+    explanation_parts = []
+    
+    col_clean = {
+        'student_id': 'Student ID',
+        'name': 'Student Name',
+        'department': 'Department',
+        'gpa': 'GPA',
+        'attendance_pct': 'Attendance %',
+        'exam_score': 'Exam Score',
+        'assignment_score': 'Assignment Score',
+        'semester': 'Semester'
+    }
+    
+    # Determine the select operation
+    is_avg = any(kw in nlp_query_lower for kw in ["average", "avg", "mean"])
+    is_count = any(kw in nlp_query_lower for kw in ["how many", "count", "number of", "total count", "amount of"])
+    is_sum = any(kw in nlp_query_lower for kw in ["sum", "total sum"])
+    
+    # Identify target column for numeric aggregation
+    target_col = None
+    if "gpa" in nlp_query_lower:
+        target_col = "gpa"
+    elif "attendance" in nlp_query_lower or "present" in nlp_query_lower:
+        target_col = "attendance_pct"
+    elif "exam" in nlp_query_lower:
+        target_col = "exam_score"
+    elif "assignment" in nlp_query_lower or "hw" in nlp_query_lower or "project" in nlp_query_lower:
+        target_col = "assignment_score"
+        
+    if is_count:
+        select_clause = "SELECT COUNT(*) AS total_students"
+        explanation_parts.append("counting the total number of students")
+    elif is_avg and target_col:
+        select_clause = f"SELECT AVG({target_col}) AS average_{target_col}"
+        explanation_parts.append(f"calculating the average {col_clean[target_col]}")
+    elif is_sum and target_col:
+        select_clause = f"SELECT SUM({target_col}) AS sum_{target_col}"
+        explanation_parts.append(f"calculating the sum of {col_clean[target_col]}")
+    else:
+        # User is requesting records
+        cols_requested = []
+        if any(kw in nlp_query_lower for kw in ["show names", "list names", "name of", "who is", "who has", "identify"]):
+            cols_requested.append("name")
+        if "gpa" in nlp_query_lower:
+            cols_requested.append("gpa")
+        if "attendance" in nlp_query_lower:
+            cols_requested.append("attendance_pct")
+        if "exam" in nlp_query_lower:
+            cols_requested.append("exam_score")
+        if "assignment" in nlp_query_lower or "hw" in nlp_query_lower or "project" in nlp_query_lower:
+            cols_requested.append("assignment_score")
+        if "department" in nlp_query_lower or "major" in nlp_query_lower:
+            cols_requested.append("department")
+        if "semester" in nlp_query_lower:
+            cols_requested.append("semester")
+            
+        if cols_requested:
+            if "name" not in cols_requested:
+                cols_requested.insert(0, "name")
+            if "student_id" not in cols_requested:
+                cols_requested.insert(0, "student_id")
+            # De-duplicate
+            cols_requested = list(dict.fromkeys(cols_requested))
+            select_clause = f"SELECT {', '.join(cols_requested)}"
+            explanation_parts.append(f"retrieving {', '.join([col_clean.get(c, c) for c in cols_requested])}")
+        else:
+            select_clause = "SELECT student_id, name, department, gpa, attendance_pct, exam_score, assignment_score, semester"
+            explanation_parts.append("retrieving student records")
+
+    # 1. Filter by Department (with word boundary, supporting abbreviations)
+    dept_map = {
+        "cs": "Computer Science",
+        "comp sci": "Computer Science",
+        "ds": "Data Science",
+        "data sci": "Data Science",
+        "math": "Mathematics",
+        "maths": "Mathematics",
+        "physics": "Physics",
+        "eng": "Engineering"
+    }
+    
+    matched_depts = []
+    # Try exact matches from dataset
+    for d in depts:
+        pattern = r'\b' + re.escape(d.lower()) + r'\b'
+        if re.search(pattern, nlp_query_lower):
+            matched_depts.append(d)
+            
+    # Try abbreviation matches if no exact match found
+    if not matched_depts:
+        for abbrev, full_name in dept_map.items():
+            if re.search(r'\b' + re.escape(abbrev) + r'\b', nlp_query_lower):
+                if full_name in depts:
+                    matched_depts.append(full_name)
+                    break
+                    
+    if matched_depts:
+        matched_depts = sorted(matched_depts, key=len, reverse=True)
+        actual_match = matched_depts[0]
+        where_conditions.append(f"department = '{actual_match}'")
+        explanation_parts.append(f"filtering for department '{actual_match}'")
+
+    # 2. Filter by Semester (supporting abbreviations like 'fall 25' -> 'Fall 2025')
+    matched_sems = []
+    for s in sems:
+        pattern = r'\b' + re.escape(s.lower()) + r'\b'
+        if re.search(pattern, nlp_query_lower):
+            matched_sems.append(s)
+            
+    # Try short year format matching if no exact matches (e.g., "fall 25" -> "Fall 2025")
+    if not matched_sems:
+        for s in sems:
+            s_clean = s.lower()
+            year_match = re.search(r'20(\d{2})', s_clean)
+            if year_match:
+                year_short = year_match.group(1)
+                season = s_clean.split()[0]
+                short_pattern = r'\b' + re.escape(season) + r'\s+' + re.escape(year_short) + r'\b'
+                if re.search(short_pattern, nlp_query_lower):
+                    matched_sems.append(s)
+                    break
+                    
+    if matched_sems:
+        actual_match = matched_sems[0]
+        where_conditions.append(f"semester = '{actual_match}'")
+        explanation_parts.append(f"filtering for semester '{actual_match}'")
+
+    # 3. Filter by Student ID
+    id_match = re.search(r'\bstu\d+\b', nlp_query_lower)
+    if id_match:
+        matched_id = id_match.group(0).upper()
+        where_conditions.append(f"student_id = '{matched_id}'")
+        explanation_parts.append(f"filtering for student ID '{matched_id}'")
+    else:
+        # Filter by Name
+        for n in stu_names:
+            if n.lower() in nlp_query_lower:
+                where_conditions.append(f"name = '{n}'")
+                explanation_parts.append(f"filtering for student named '{n}'")
+                break
+
+    # Extract limit value and exclude it from conditional filters
+    limit_val = 1
+    top_x_match = re.search(r'\b(?:top|best|lowest|bottom|first|last|limit)\s+(\d+)\b', nlp_query_lower)
+    limit_number_str = None
+    if top_x_match:
+        limit_val = int(top_x_match.group(1))
+        limit_number_str = top_x_match.group(1)
+
+    # Extract comparisons with numbers (excluding the limit quantity number)
+    all_numbers = re.findall(r'\b\d+(?:\.\d+)?\b', nlp_query_lower)
+    numbers = []
+    limit_excluded = False
+    for num in all_numbers:
+        if limit_number_str and num == limit_number_str and not limit_excluded:
+            limit_excluded = True
+            continue
+        numbers.append(num)
+    
+    def parse_operator(query_slice):
+        if any(kw in query_slice for kw in ["greater than or equal", "at least", "minimum of", "min of", ">="]):
+            return ">=", "greater than or equal to"
+        if any(kw in query_slice for kw in ["less than or equal", "at most", "maximum of", "max of", "<="]):
+            return "<=", "less than or equal to"
+        if any(kw in query_slice for kw in ["greater than", "more than", "above", "higher than", "over", "exceed", ">"]):
+            return ">", "greater than"
+        if any(kw in query_slice for kw in ["less than", "below", "under", "lower than", "poorer than", "<"]):
+            return "<", "less than"
+        if any(kw in query_slice for kw in ["equal to", "equals", "is", "="]):
+            return "=", "equal to"
+        return ">", "greater than"
+
+    # Handle "between X and Y" queries
+    between_match = re.search(r'between\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)', nlp_query_lower)
+    if between_match:
+        val1 = float(between_match.group(1))
+        val2 = float(between_match.group(2))
+        
+        # Sort values
+        v_min = min(val1, val2)
+        v_max = max(val1, val2)
+        
+        # Determine column target
+        if v_max <= 10.0 and any(kw in nlp_query_lower for kw in ['gpa', 'cgpa', 'grade']):
+            where_conditions.append(f"gpa >= {v_min} AND gpa <= {v_max}")
+            explanation_parts.append(f"GPA between {v_min} and {v_max}")
+            numbers = [num for num in numbers if num != between_match.group(1) and num != between_match.group(2)]
+        elif any(kw in nlp_query_lower for kw in ['attendance', 'present', 'attend']):
+            where_conditions.append(f"attendance_pct >= {v_min} AND attendance_pct <= {v_max}")
+            explanation_parts.append(f"Attendance % between {v_min}% and {v_max}%")
+            numbers = [num for num in numbers if num != between_match.group(1) and num != between_match.group(2)]
+        elif any(kw in nlp_query_lower for kw in ['exam', 'test', 'marks']):
+            where_conditions.append(f"exam_score >= {v_min} AND exam_score <= {v_max}")
+            explanation_parts.append(f"Exam Score between {v_min}% and {v_max}%")
+            numbers = [num for num in numbers if num != between_match.group(1) and num != between_match.group(2)]
+        elif any(kw in nlp_query_lower for kw in ['assignment', 'project', 'hw', 'homework']):
+            where_conditions.append(f"assignment_score >= {v_min} AND assignment_score <= {v_max}")
+            explanation_parts.append(f"Assignment Score between {v_min}% and {v_max}%")
+            numbers = [num for num in numbers if num != between_match.group(1) and num != between_match.group(2)]
+
+    # Standard GPA condition
+    if any(kw in nlp_query_lower for kw in ['gpa', 'cgpa', 'grade']):
+        gpa_idx = nlp_query_lower.find('gpa')
+        if gpa_idx == -1:
+            gpa_idx = nlp_query_lower.find('cgpa')
+        if gpa_idx == -1:
+            gpa_idx = nlp_query_lower.find('grade')
+            
+        gpa_val = None
+        min_dist = 9999
+        for n in numbers:
+            fval = float(n)
+            if fval <= 10.0:
+                n_idx = nlp_query_lower.find(n)
+                dist = abs(n_idx - gpa_idx)
+                if dist < min_dist:
+                    min_dist = dist
+                    gpa_val = fval
+        if gpa_val is not None:
+            n_str = str(int(gpa_val)) if gpa_val.is_integer() else str(gpa_val)
+            n_idx = nlp_query_lower.find(n_str)
+            start = min(gpa_idx, n_idx)
+            end = max(gpa_idx, n_idx)
+            slice_text = nlp_query_lower[start:end]
+            op, op_desc = parse_operator(slice_text)
+            
+            where_conditions.append(f"gpa {op} {n_str}")
+            explanation_parts.append(f"GPA {op_desc} {n_str}")
+
+    # Standard Attendance condition
+    if any(kw in nlp_query_lower for kw in ['attendance', 'present', 'attend']):
+        att_idx = nlp_query_lower.find('attendance')
+        if att_idx == -1:
+            att_idx = nlp_query_lower.find('present')
+        if att_idx == -1:
+            att_idx = nlp_query_lower.find('attend')
+            
+        att_val = None
+        min_dist = 9999
+        for n in numbers:
+            fval = float(n)
+            if fval > 10.0 or fval <= 1.0:
+                if fval <= 1.0:
+                    fval = fval * 100.0
+                n_idx = nlp_query_lower.find(n)
+                dist = abs(n_idx - att_idx)
+                if dist < min_dist:
+                    min_dist = dist
+                    att_val = fval
+        if att_val is not None:
+            n_str = str(int(att_val)) if att_val.is_integer() else str(att_val)
+            orig_n_strs = [n for n in numbers if float(n) == att_val or (float(n)*100.0 == att_val)]
+            if orig_n_strs:
+                orig_n_str = orig_n_strs[0]
+                n_idx = nlp_query_lower.find(orig_n_str)
+                start = min(att_idx, n_idx)
+                end = max(att_idx, n_idx)
+                slice_text = nlp_query_lower[start:end]
+                op, op_desc = parse_operator(slice_text)
+                
+                where_conditions.append(f"attendance_pct {op} {n_str}")
+                explanation_parts.append(f"Attendance % {op_desc} {n_str}%")
+
+    # Standard Exam score condition
+    if any(kw in nlp_query_lower for kw in ['exam', 'test', 'midterm', 'marks']):
+        exam_idx = nlp_query_lower.find('exam')
+        if exam_idx == -1:
+            exam_idx = nlp_query_lower.find('test')
+        if exam_idx == -1:
+            exam_idx = nlp_query_lower.find('marks')
+            
+        exam_val = None
+        min_dist = 9999
+        for n in numbers:
+            fval = float(n)
+            if fval > 10.0:
+                n_idx = nlp_query_lower.find(n)
+                dist = abs(n_idx - exam_idx)
+                if dist < min_dist:
+                    min_dist = dist
+                    exam_val = fval
+        if exam_val is not None:
+            n_str = str(int(exam_val)) if exam_val.is_integer() else str(exam_val)
+            n_idx = nlp_query_lower.find(n_str)
+            start = min(exam_idx, n_idx)
+            end = max(exam_idx, n_idx)
+            slice_text = nlp_query_lower[start:end]
+            op, op_desc = parse_operator(slice_text)
+            
+            where_conditions.append(f"exam_score {op} {n_str}")
+            explanation_parts.append(f"Exam Score {op_desc} {n_str}%")
+
+    # Standard Assignment score condition
+    if any(kw in nlp_query_lower for kw in ['assignment', 'project', 'hw', 'homework']):
+        assign_idx = nlp_query_lower.find('assignment')
+        if assign_idx == -1:
+            assign_idx = nlp_query_lower.find('project')
+        if assign_idx == -1:
+            assign_idx = nlp_query_lower.find('hw')
+            
+        assign_val = None
+        min_dist = 9999
+        for n in numbers:
+            fval = float(n)
+            if fval > 10.0:
+                n_idx = nlp_query_lower.find(n)
+                dist = abs(n_idx - assign_idx)
+                if dist < min_dist:
+                    min_dist = dist
+                    assign_val = fval
+        if assign_val is not None:
+            n_str = str(int(assign_val)) if assign_val.is_integer() else str(assign_val)
+            n_idx = nlp_query_lower.find(n_str)
+            start = min(assign_idx, n_idx)
+            end = max(assign_idx, n_idx)
+            slice_text = nlp_query_lower[start:end]
+            op, op_desc = parse_operator(slice_text)
+            
+            where_conditions.append(f"assignment_score {op} {n_str}")
+            explanation_parts.append(f"Assignment Score {op_desc} {n_str}%")
+
+    # Sorting & Extremes (ORDER BY and LIMIT)
+    is_highest = any(kw in nlp_query_lower for kw in ["highest", "top", "best", "maximum", "max", "greatest", "most", "high"])
+    is_lowest = any(kw in nlp_query_lower for kw in ["lowest", "bottom", "worst", "minimum", "min", "poorest", "least", "low"])
+    
+    order_col = None
+    if "gpa" in nlp_query_lower:
+        order_col = "gpa"
+    elif "attendance" in nlp_query_lower or "present" in nlp_query_lower:
+        order_col = "attendance_pct"
+    elif "exam" in nlp_query_lower:
+        order_col = "exam_score"
+    elif "assignment" in nlp_query_lower or "hw" in nlp_query_lower or "project" in nlp_query_lower:
+        order_col = "assignment_score"
+        
+    if (is_highest or is_lowest) and not order_col:
+        order_col = "gpa"
+        
+    if order_col:
+        has_explicit_limit = top_x_match is not None
+        is_singular_superlative = any(kw in nlp_query_lower for kw in ["highest", "lowest", "best", "worst", "maximum", "minimum", "greatest", "least", "who is", "who has"])
+        
+        if is_lowest:
+            order_clause = f" ORDER BY {order_col} ASC"
+            if has_explicit_limit or is_singular_superlative:
+                limit_clause = f" LIMIT {limit_val}"
+                explanation_parts.append(f"ordered by lowest {col_clean[order_col]} (bottom {limit_val})")
+            else:
+                explanation_parts.append(f"ordered by lowest {col_clean[order_col]}")
+        elif is_highest:
+            order_clause = f" ORDER BY {order_col} DESC"
+            if has_explicit_limit or is_singular_superlative:
+                limit_clause = f" LIMIT {limit_val}"
+                explanation_parts.append(f"ordered by highest {col_clean[order_col]} (top {limit_val})")
+            else:
+                explanation_parts.append(f"ordered by highest {col_clean[order_col]}")
+
+    # Construct complete SQL Query
+    sql_query = select_clause + " FROM students"
+    if where_conditions:
+        sql_query += " WHERE " + " AND ".join(where_conditions)
+    if order_clause:
+        sql_query += order_clause
+    if limit_clause:
+        sql_query += limit_clause
+        
+    sql_query += ";"
+    
+    if explanation_parts:
+        explanation = "Generated SQL query by " + ", and ".join(explanation_parts) + "."
+    else:
+        explanation = "Generated default query listing student records."
+        
+    return sql_query, explanation
+
+
+def execute_sql_query(sql_query: str, df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    try:
+        conn = sqlite3.connect(':memory:')
+        df.to_sql('students', conn, index=False, if_exists='replace')
+        
+        res_df = pd.read_sql_query(sql_query, conn)
+        conn.close()
+        
+        if res_df.empty:
+            answer = "No records matched the query criteria."
+        elif len(res_df) == 1 and len(res_df.columns) == 1:
+            val = res_df.iloc[0, 0]
+            col_name = res_df.columns[0]
+            if "avg" in col_name or "average" in col_name:
+                answer = f"The average value is {val:.2f}."
+            elif "count" in col_name or "total" in col_name:
+                answer = f"The total count is {val}."
+            elif "sum" in col_name:
+                answer = f"The total sum is {val:.2f}."
+            else:
+                answer = f"The result is {val}."
+        elif len(res_df) == 1:
+            row_dict = res_df.iloc[0].to_dict()
+            details = ", ".join([f"{k}: {v}" for k, v in row_dict.items()])
+            answer = f"Found 1 matching record: {details}."
+        else:
+            answer = f"Retrieved {len(res_df)} matching records."
+            
+        return res_df, answer
+    except Exception as e:
+        return pd.DataFrame(), f"SQL execution error: {str(e)}"
+
+# Inject custom monochrome theme CSS
 st.markdown(f"""
     <style>
-        /* Import futuristic and clean fonts */
+        /* Import clean fonts */
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
-
-        /* Parallax starfields in background */
-        @keyframes animStar {{
-            from {{ transform: translateY(0px); }}
-            to {{ transform: translateY(-2000px); }}
-        }}
-
-        .star-field-1 {{
-            width: 1px;
-            height: 1px;
-            background: transparent;
-            box-shadow: {stars_1};
-            animation: animStar 140s linear infinite;
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            pointer-events: none;
-            z-index: 0;
-        }}
-
-        .star-field-2 {{
-            width: 2px;
-            height: 2px;
-            background: transparent;
-            box-shadow: {stars_2};
-            animation: animStar 200s linear infinite;
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            pointer-events: none;
-            z-index: 0;
-        }}
-
-        .star-field-3 {{
-            width: 3px;
-            height: 3px;
-            background: transparent;
-            box-shadow: {stars_3};
-            animation: animStar 260s linear infinite;
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            pointer-events: none;
-            z-index: 0;
-        }}
 
         /* App container overrides */
         .stApp {{
-            background-color: #0a0b14 !important;
-            background-image: radial-gradient(ellipse at bottom, #11132a 0%, #05060b 100%) !important;
-            font-family: 'Space Grotesk', 'Inter', sans-serif;
-            color: #ffffff !important;
+            background-color: #faf8f5 !important;
+            background-image: none !important;
+            font-family: 'Inter', sans-serif;
+            color: #1b3a5b !important;
         }}
 
         /* Make sure all markdown text uses the correct font */
         .stMarkdown, div[data-testid="stMarkdownContainer"] p {{
             font-family: 'Inter', sans-serif !important;
-            color: #e0e0e0 !important;
+            color: #4a607a !important;
+        }}
+
+        /* Headers */
+        h1, h2, h3, h4, h5, h6, [data-testid="stMarkdownContainer"] h1, [data-testid="stMarkdownContainer"] h2, [data-testid="stMarkdownContainer"] h3 {{
+            font-family: 'Space Grotesk', sans-serif !important;
+            color: #1b3a5b !important;
+            font-weight: 700 !important;
         }}
 
         /* Styled Sidebar */
         section[data-testid="stSidebar"] {{
-            background-color: rgba(10, 11, 20, 0.95) !important;
-            border-right: 1px solid rgba(79, 195, 247, 0.15) !important;
-            backdrop-filter: blur(12px) !important;
+            background-color: #faf8f5 !important;
+            border-right: 1px solid #e2e8f0 !important;
         }}
 
         section[data-testid="stSidebar"] h1,
@@ -105,25 +492,24 @@ st.markdown(f"""
         section[data-testid="stSidebar"] h3,
         section[data-testid="stSidebar"] p,
         section[data-testid="stSidebar"] label {{
-            color: #ffffff !important;
+            color: #1b3a5b !important;
             font-family: 'Space Grotesk', sans-serif;
         }}
 
-        /* Universal Container Override: custom glassmorphic bordered containers */
+        /* Universal Container Override: custom minimalist white cards */
         div[data-testid="stBorderedContainer"] {{
-            border: 1px solid rgba(79, 195, 247, 0.22) !important;
-            border-radius: 16px !important;
-            backdrop-filter: blur(8px) !important;
-            background: rgba(255, 255, 255, 0.04) !important;
+            border: 1px solid #e2e8f0 !important;
+            border-radius: 12px !important;
+            background: #ffffff !important;
             padding: 24px !important;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
-            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+            transition: all 0.2s ease-in-out !important;
         }}
         
         div[data-testid="stBorderedContainer"]:hover {{
-            transform: translateY(-4px) !important;
-            border-color: rgba(179, 136, 255, 0.45) !important;
-            box-shadow: 0 12px 40px 0 rgba(79, 195, 247, 0.15), inset 0 0 10px rgba(179, 136, 255, 0.05) !important;
+            transform: translateY(-2px) !important;
+            border-color: #1b3a5b !important;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03) !important;
         }}
 
         /* Custom KPI styles */
@@ -131,7 +517,7 @@ st.markdown(f"""
             font-size: 0.85rem;
             text-transform: uppercase;
             letter-spacing: 1.5px;
-            color: rgba(255, 255, 255, 0.6) !important;
+            color: #4a607a !important;
             margin-bottom: 6px;
             font-family: 'Space Grotesk', sans-serif;
             font-weight: 500;
@@ -143,10 +529,10 @@ st.markdown(f"""
             font-family: 'Space Grotesk', sans-serif;
             margin-bottom: 4px;
         }}
-        .kpi-val.blue {{ color: #4fc3f7; text-shadow: 0 0 12px rgba(79, 195, 247, 0.35); }}
-        .kpi-val.violet {{ color: #b388ff; text-shadow: 0 0 12px rgba(179, 136, 255, 0.35); }}
-        .kpi-val.mint {{ color: #69f0ae; text-shadow: 0 0 12px rgba(105, 240, 174, 0.35); }}
-        .kpi-val.red {{ color: #ff5252; text-shadow: 0 0 12px rgba(255, 82, 82, 0.35); }}
+        .kpi-val.blue {{ color: #1b3a5b !important; }}
+        .kpi-val.violet {{ color: #4a607a !important; }}
+        .kpi-val.mint {{ color: #2f855a !important; }}
+        .kpi-val.red {{ color: #c53030 !important; }}
 
         /* Top Navbar Floating Header Styling */
         .navbar-bar {{
@@ -154,12 +540,11 @@ st.markdown(f"""
             align-items: center;
             justify-content: space-between;
             padding: 16px 24px;
-            border: 1px solid rgba(79, 195, 247, 0.25);
-            border-radius: 16px;
-            background: rgba(255, 255, 255, 0.03);
-            backdrop-filter: blur(10px);
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            background: #ffffff;
             margin-bottom: 24px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
         }}
 
         .navbar-title {{
@@ -167,10 +552,9 @@ st.markdown(f"""
             font-size: 1.65rem;
             font-weight: 700;
             letter-spacing: 1.5px;
-            background: linear-gradient(45deg, #4fc3f7, #b388ff, #69f0ae);
+            background: linear-gradient(45deg, #1b3a5b, #4a607a);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            text-shadow: 0 0 15px rgba(79, 195, 247, 0.15);
         }}
 
         /* Hide default Streamlit elements for clean UI */
@@ -178,27 +562,142 @@ st.markdown(f"""
         footer {{visibility: hidden;}}
         header {{visibility: hidden;}}
 
+        /* Keep the sidebar expand button visible when collapsed */
+        [data-testid="collapsedControl"] {{
+            visibility: visible !important;
+            color: #1b3a5b !important;
+        }}
+
         /* Custom scrollbars */
         ::-webkit-scrollbar {{
             width: 8px;
             height: 8px;
         }}
         ::-webkit-scrollbar-track {{
-            background: rgba(255, 255, 255, 0.02);
+            background: #faf8f5;
         }}
         ::-webkit-scrollbar-thumb {{
-            background: rgba(79, 195, 247, 0.3);
+            background: #cbd5e1;
             border-radius: 4px;
         }}
         ::-webkit-scrollbar-thumb:hover {{
-            background: rgba(179, 136, 255, 0.5);
+            background: #1b3a5b;
+        }}
+
+        /* Forms, inputs and buttons style adjustments in Streamlit */
+        div[data-testid="stForm"] {{
+            border: 1px solid #e2e8f0 !important;
+            border-radius: 12px !important;
+            background: #ffffff !important;
+        }}
+
+        /* Base button style reset */
+        .stButton>button, button, button[kind="primary"], button[kind="secondary"], button[data-testid="stFormSubmitButton"] {{
+            transition: all 0.2s ease-in-out !important;
+            border-radius: 8px !important;
+            font-family: 'Inter', sans-serif !important;
+        }}
+
+        /* Primary/Action buttons styling */
+        button[kind="primary"],
+        button[data-testid="stFormSubmitButton"] {{
+            background-color: #1b3a5b !important;
+            color: #faf8f5 !important;
+            border: 1px solid #1b3a5b !important;
+            font-weight: 600 !important;
+        }}
+        button[kind="primary"]:hover,
+        button[data-testid="stFormSubmitButton"]:hover {{
+            background-color: #112a46 !important;
+            border-color: #112a46 !important;
+            color: #faf8f5 !important;
+        }}
+
+        /* Secondary / suggestion button styling */
+        .stButton>button,
+        button[kind="secondary"] {{
+            background-color: #ffffff !important;
+            color: #1b3a5b !important;
+            border: 1px solid #cbd5e1 !important;
+            font-weight: 500 !important;
+        }}
+        .stButton>button:hover,
+        button[kind="secondary"]:hover {{
+            background-color: #f8fafc !important;
+            border-color: #1b3a5b !important;
+            color: #1b3a5b !important;
+        }}
+
+        /* Ensure child label elements inside buttons inherit the parent button's text color */
+        .stButton>button p, .stButton>button span, .stButton>button div,
+        button p, button span, button div,
+        button[kind="primary"] p, button[kind="primary"] span, button[kind="primary"] div,
+        button[kind="secondary"] p, button[kind="secondary"] span, button[kind="secondary"] div,
+        button[data-testid="stFormSubmitButton"] p, button[data-testid="stFormSubmitButton"] span, button[data-testid="stFormSubmitButton"] div {{
+            color: inherit !important;
+            font-weight: inherit !important;
+        }}
+
+        /* Custom file uploader style */
+        div[data-testid="stFileUploader"] {{
+            border: 1px dashed #cbd5e1 !important;
+            border-radius: 12px !important;
+            background: #ffffff !important;
+            padding: 14px !important;
+        }}
+        div[data-testid="stFileUploader"] section {{
+            background-color: transparent !important;
+            border: none !important;
+            padding: 0 !important;
+        }}
+        div[data-testid="stFileUploader"] label {{
+            color: #1b3a5b !important;
+            font-weight: 600 !important;
+        }}
+
+        /* Selectbox and Multiselect Dropdowns styling */
+        div[data-baseweb="select"] {{
+            background-color: #ffffff !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 8px !important;
+        }}
+        div[data-baseweb="select"] * {{
+            color: #1b3a5b !important;
+        }}
+
+        /* Multiselect tag pills style */
+        span[role="button"] {{
+            background-color: #f1f5f9 !important;
+            color: #1b3a5b !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 6px !important;
+        }}
+        span[role="button"] * {{
+            color: #1b3a5b !important;
+        }}
+
+        /* Text inputs styling */
+        div[data-testid="stTextInput"] input {{
+            background-color: #ffffff !important;
+            color: #1b3a5b !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 8px !important;
+            padding: 10px 14px !important;
+        }}
+        div[data-testid="stTextInput"] input:focus {{
+            border-color: #1b3a5b !important;
+            box-shadow: 0 0 0 1px #1b3a5b !important;
+        }}
+
+        /* Slider elements styling */
+        div[role="slider"] {{
+            background-color: #1b3a5b !important;
+            border: 2px solid #ffffff !important;
+        }}
+        div[data-testid="stSlider"] [data-direction="horizontal"] {{
+            background-color: #1b3a5b !important;
         }}
     </style>
-
-    <!-- Starfield HTML placeholders -->
-    <div class="star-field-1"></div>
-    <div class="star-field-2"></div>
-    <div class="star-field-3"></div>
 """, unsafe_allow_html=True)
 
 
@@ -468,7 +967,10 @@ def update_from_sidebar():
 st.sidebar.markdown("### 🪐 Space Navigation")
 
 # CSV File Uploader
-uploaded_file = st.sidebar.file_uploader("Upload Student CSV", type=['csv'])
+uploaded_file_sidebar = st.sidebar.file_uploader("Upload Student CSV", type=['csv'], key="sidebar_file_uploader")
+uploaded_file_main = st.session_state.get("main_file_uploader", None)
+
+uploaded_file = uploaded_file_main if uploaded_file_main is not None else uploaded_file_sidebar
 
 # Dynamic Data Loading
 if uploaded_file is not None:
@@ -480,7 +982,7 @@ if uploaded_file is not None:
         
         # Schema override expander
         with st.sidebar.expander("⚙️ CSV Schema Mapping", expanded=False):
-            st.markdown("<p style='font-size: 0.85rem; color: rgba(255,255,255,0.7);'>We auto-detected these columns. Adjust if needed:</p>", unsafe_allow_html=True)
+            st.markdown("<p style='font-size: 0.85rem; color: #4a607a;'>We auto-detected these columns. Adjust if needed:</p>", unsafe_allow_html=True)
             
             sel_id = st.selectbox("Student ID", raw_df.columns, index=safe_index(list(raw_df.columns), initial_mapping['student_id']))
             sel_name = st.selectbox("Name", raw_df.columns, index=safe_index(list(raw_df.columns), initial_mapping['name']))
@@ -616,6 +1118,15 @@ with navbar_cols[1]:
         label_visibility="collapsed"
     )
 
+# Main page subtle file uploader
+with st.expander("📥 Import/Upload New CSV Document", expanded=False):
+    st.file_uploader(
+        "Upload Student CSV", 
+        type=['csv'], 
+        key="main_file_uploader",
+        label_visibility="collapsed"
+    )
+
 # ----------------------------------------------------
 # 8. KPI Cards Row
 # ----------------------------------------------------
@@ -670,32 +1181,107 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 
 # ----------------------------------------------------
+# 12. AI Text-to-SQL Query Console
+# ----------------------------------------------------
+st.markdown("### 🚀 AI Text-to-SQL Query Console")
+
+with st.container(border=True):
+    st.markdown(
+        "<p style='font-size: 0.9rem; color: #4a607a; margin-bottom: 12px; font-weight: 500;'>"
+        "Ask a question in natural language to query the student telemetry database, or write direct SQL queries."
+        "</p>",
+        unsafe_allow_html=True
+    )
+    
+    # Pre-defined query template pills/suggestions
+    cols_sug = st.columns(4)
+    suggestions = [
+        "Who has the highest GPA?",
+        "Average attendance in Computer Science",
+        "Show students with attendance < 50%",
+        "List top 5 exam scores in Engineering"
+    ]
+    
+    if 'sql_text_input' not in st.session_state:
+        st.session_state.sql_text_input = ""
+        
+    for i, sug in enumerate(suggestions):
+        with cols_sug[i % 4]:
+            if st.button(sug, key=f"sug_{i}", use_container_width=True):
+                st.session_state.sql_text_input = sug
+                
+    # Input box wrapped in a form for single enter/run submission
+    with st.form("sql_query_form", clear_on_submit=False):
+        user_query = st.text_input(
+            "Ask Query (NL or SQL):",
+            placeholder="e.g. Show top 5 students by GPA or SELECT name, gpa FROM students WHERE gpa > 9.0",
+            key="sql_text_input"
+        )
+        submit_btn = st.form_submit_button("🚀 Run Telemetry Query", use_container_width=True)
+    
+    if user_query:
+        # Translate and execute
+        is_raw_sql = user_query.strip().lower().startswith("select")
+        
+        # We run the query on df (the cleaned dataframe before sidebar filters, or filtered_df?
+        # Let's run on 'df' so the user can query the entire active dataset, which is more powerful!)
+        if is_raw_sql:
+            sql_query = user_query
+            explanation = "Executed custom user SQL query."
+        else:
+            sql_query, explanation = translate_nlp_to_sql(user_query, df)
+            
+        res_df, answer = execute_sql_query(sql_query, df)
+        
+        # Display Generated SQL & Explanation
+        st.markdown(f"**Generated SQL Query:**")
+        st.code(sql_query, language="sql")
+        
+        # Results
+        st.markdown(f"**Interpretation:** {explanation}")
+        st.markdown(f"**Result:** {answer}")
+        
+        if not res_df.empty:
+            st.dataframe(res_df, use_container_width=True, hide_index=True)
+        else:
+            st.warning("No records matched this query.")
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+
+# ----------------------------------------------------
 # 9. Plotly Helpers
 # ----------------------------------------------------
-def apply_plotly_style(fig, title):
+def apply_plotly_style(fig, title, subtitle=None):
+    title_text = f"<b>{title}</b>"
+    top_margin = 55
+    if subtitle:
+        title_text += f"<br><span style='font-size: 11px; font-weight: normal; color: #4a607a; font-family: Inter;'>{subtitle}</span>"
+        top_margin = 75
+        
     fig.update_layout(
         title=dict(
-            text=f"<b>{title}</b>",
-            font=dict(size=15, family="Space Grotesk", color="#ffffff"),
+            text=title_text,
+            font=dict(size=14, family="Space Grotesk", color="#1b3a5b"),
             x=0.01,
-            y=0.96
+            y=0.98
         ),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
         font_family="Space Grotesk, sans-serif",
-        font_color="#ffffff",
-        margin=dict(l=45, r=20, t=55, b=45),
+        font_color="#1b3a5b",
+        margin=dict(l=45, r=20, t=top_margin, b=45),
         xaxis=dict(
-            gridcolor='rgba(255, 255, 255, 0.05)',
-            zerolinecolor='rgba(255, 255, 255, 0.08)',
-            tickfont=dict(color='rgba(255, 255, 255, 0.7)', family="Inter"),
-            title_font=dict(color='rgba(255, 255, 255, 0.8)', size=11, family="Space Grotesk")
+            gridcolor='rgba(27, 58, 91, 0.08)',
+            zerolinecolor='rgba(27, 58, 91, 0.15)',
+            tickfont=dict(color='#4a607a', family="Inter"),
+            title_font=dict(color='#1b3a5b', size=11, family="Space Grotesk")
         ),
         yaxis=dict(
-            gridcolor='rgba(255, 255, 255, 0.05)',
-            zerolinecolor='rgba(255, 255, 255, 0.08)',
-            tickfont=dict(color='rgba(255, 255, 255, 0.7)', family="Inter"),
-            title_font=dict(color='rgba(255, 255, 255, 0.8)', size=11, family="Space Grotesk")
+            gridcolor='rgba(27, 58, 91, 0.08)',
+            zerolinecolor='rgba(27, 58, 91, 0.15)',
+            tickfont=dict(color='#4a607a', family="Inter"),
+            title_font=dict(color='#1b3a5b', size=11, family="Space Grotesk")
         )
     )
     return fig
@@ -724,14 +1310,14 @@ with row1_cols[0]:
                 y='Students',
                 color='Grade Bucket',
                 color_discrete_map={
-                    'A (>=9.0)': '#69f0ae',    # Mint
-                    'B (8.0-9.0)': '#4fc3f7',  # Electric Blue
-                    'C (7.0-8.0)': '#b388ff',  # Violet
-                    'D (5.0-7.0)': '#ffd740',  # Amber
-                    'F (<5.0)': '#ff5252'      # Red
+                    'A (>=9.0)': '#2f855a',    # Mint
+                    'B (8.0-9.0)': '#1b3a5b',  # Electric Blue
+                    'C (7.0-8.0)': '#4a607a',  # Violet
+                    'D (5.0-7.0)': '#b7791f',  # Amber
+                    'F (<5.0)': '#c53030'      # Red
                 }
             )
-            apply_plotly_style(fig_grade, "GRADE DISTRIBUTION")
+            apply_plotly_style(fig_grade, "GRADE DISTRIBUTION", "Count of cohort students grouped into academic grade letters")
             fig_grade.update_layout(showlegend=False)
             st.plotly_chart(fig_grade, use_container_width=True)
         else:
@@ -751,17 +1337,23 @@ with row1_cols[1]:
                 z=heatmap_data.values,
                 x=heatmap_data.columns,
                 y=heatmap_data.index,
-                colorscale=[[0, '#0c0d1b'], [0.4, '#1b1238'], [0.75, '#5c3d99'], [1.0, '#4fc3f7']],
+                colorscale=[
+                    [0.0, '#fbf3be'],
+                    [0.25, '#c3e8ca'],
+                    [0.5, '#b6e3f9'],
+                    [0.75, '#7ec8f2'],
+                    [1.0, '#4ca8e6']
+                ],
                 text=hover_text,
                 texttemplate="%{text}",
-                textfont={"size": 11, "family": "Space Grotesk", "color": "#ffffff"},
+                textfont={"size": 11, "family": "Space Grotesk", "color": "#1b3a5b"},
                 hovertemplate="Department: %{y}<br>Semester: %{x}<br>Avg Attendance: %{text}<extra></extra>",
                 colorbar=dict(
-                    title=dict(text="Avg %", font=dict(color="#ffffff", size=9)),
-                    tickfont=dict(color="rgba(255, 255, 255, 0.7)", size=9)
+                    title=dict(text="Avg %", font=dict(color="#1b3a5b", size=9)),
+                    tickfont=dict(color="#4a607a", size=9)
                 )
             ))
-            apply_plotly_style(fig_heatmap, "ATTENDANCE HEATMAP BY DEPT & SEMESTER")
+            apply_plotly_style(fig_heatmap, "ATTENDANCE HEATMAP BY DEPT & SEMESTER", "Average attendance percentages by academic department and semester")
             st.plotly_chart(fig_heatmap, use_container_width=True)
         else:
             st.info("No data available for Attendance Heatmap.")
@@ -779,16 +1371,16 @@ with row2_cols[0]:
                 y='gpa',
                 color='department',
                 hover_name='name',
-                color_discrete_sequence=['#4fc3f7', '#b388ff', '#69f0ae', '#ffd740', '#ff8a80', '#ea80fc'],
+                color_discrete_sequence=['#1b3a5b', '#4a607a', '#2f855a', '#b7791f', '#c53030', '#718096'],
                 labels={'attendance_pct': 'Attendance %', 'gpa': 'GPA', 'department': 'Department'}
             )
-            apply_plotly_style(fig_scatter, "ATTENDANCE VS GPA SCATTER PLOT")
+            apply_plotly_style(fig_scatter, "ATTENDANCE VS GPA SCATTER PLOT", "Correlation mapping between attendance ratios and GPAs")
             fig_scatter.update_layout(
                 showlegend=True,
                 legend=dict(
                     title=None,
                     bgcolor='rgba(0,0,0,0)',
-                    font=dict(color='#ffffff', size=9, family="Inter"),
+                    font=dict(color='#4a607a', size=9, family="Inter"),
                     orientation="h",
                     yanchor="bottom",
                     y=1.02,
@@ -821,10 +1413,10 @@ with row2_cols[1]:
                 x='gpa',
                 orientation='h',
                 color='gpa',
-                color_continuous_scale=[[0, '#b388ff'], [1.0, '#69f0ae']],
+                color_continuous_scale=[[0, '#4a607a'], [1.0, '#1b3a5b']],
                 labels={'gpa': 'Average GPA', 'department': ''}
             )
-            apply_plotly_style(fig_dept_gpa, "AVERAGE GPA BY DEPARTMENT")
+            apply_plotly_style(fig_dept_gpa, "AVERAGE GPA BY DEPARTMENT", "Comparative average GPA performance vectors across streams")
             fig_dept_gpa.update_layout(
                 coloraxis_showscale=False,
                 xaxis=dict(range=[0, 10])
@@ -869,7 +1461,7 @@ with st.container(border=True):
         # Row highlighting styler
         def highlight_at_risk_rows(row):
             # Styler expects a style directive for each element in the row
-            return ['background-color: rgba(255, 82, 82, 0.12); color: #ff8a80; font-family: Inter; border: 1px solid rgba(255, 82, 82, 0.15);'] * len(row)
+            return ['background-color: rgba(255, 82, 82, 0.08); color: #c53030; font-family: Inter; border: 1px solid rgba(255, 82, 82, 0.15);'] * len(row)
         
         styled_roster = roster_df.style.apply(highlight_at_risk_rows, axis=1)
         
@@ -890,8 +1482,9 @@ with st.container(border=True):
         )
     else:
         st.markdown(
-            "<div style='border: 1px solid rgba(105, 240, 174, 0.25); border-radius: 12px; padding: 15px; background: rgba(105, 240, 174, 0.05); color: #69f0ae; font-weight: 500; font-size: 0.95rem;'>"
+            "<div style='border: 1px solid rgba(47, 133, 90, 0.2); border-radius: 12px; padding: 15px; background: rgba(47, 133, 90, 0.05); color: #2f855a; font-weight: 500; font-size: 0.95rem;'>"
             "🌌 Zero-Gravity Operational Report: All student systems functioning correctly. Zero at-risk students detected under current telemetry filters."
             "</div>",
             unsafe_allow_html=True
         )
+

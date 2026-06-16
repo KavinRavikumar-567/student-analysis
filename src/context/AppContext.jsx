@@ -20,6 +20,12 @@ export const AppProvider = ({ children }) => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
 
+  // Text-to-SQL states
+  const [sqlQuery, setSqlQuery] = useState('');
+  const [sqlResults, setSqlResults] = useState(null);
+  const [sqlLoading, setSqlLoading] = useState(false);
+  const [sqlError, setSqlError] = useState(null);
+
   // Auto-fetch insights on load if we want to display mock data by default
   useEffect(() => {
     const loadMockInsights = async () => {
@@ -109,8 +115,36 @@ export const AppProvider = ({ children }) => {
     }
   };
 
+  const runSqlQuery = async (query) => {
+    if (!query.trim()) return;
+    setSqlLoading(true);
+    setSqlError(null);
+    try {
+      const response = await axios.post(`${API_BASE}/sql-query`, { query });
+      setSqlResults(response.data);
+      return response.data;
+    } catch (err) {
+      console.error('SQL query failed:', err);
+      const msg = err.response?.data?.detail || 'Failed to execute database query.';
+      setSqlError(msg);
+      setSqlResults({
+        success: false,
+        answer: `Error: ${msg}`,
+        sql_query: '',
+        explanation: 'Query failed to execute.',
+        columns: [],
+        records: []
+      });
+    } finally {
+      setSqlLoading(false);
+    }
+  };
+
   const resetApp = async () => {
     setFileInfo(null);
+    setSqlResults(null);
+    setSqlQuery('');
+    setSqlError(null);
     setIsLoading(true);
     setCurrentView('upload');
     try {
@@ -141,6 +175,13 @@ export const AppProvider = ({ children }) => {
         analyseData,
         sendChatMessage,
         resetApp,
+        sqlQuery,
+        setSqlQuery,
+        sqlResults,
+        setSqlResults,
+        sqlLoading,
+        sqlError,
+        runSqlQuery,
       }}
     >
       {children}

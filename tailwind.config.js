@@ -7,10 +7,10 @@ export default {
   theme: {
     extend: {
       colors: {
-        spaceBg: '#050710',
-        electricBlue: '#4fc3f7',
-        accentViolet: '#b388ff',
-        mintGreen: '#69f0ae',
+        spaceBg: '#faf8f5',
+        electricBlue: '#1b3a5b',
+        accentViolet: '#4a607a',
+        mintGreen: '#2f855a',
       },
       fontFamily: {
         space: ['Space Grotesk', 'sans-serif'],

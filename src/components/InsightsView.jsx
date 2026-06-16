@@ -15,7 +15,13 @@ import {
   Sparkles,
   Percent,
   GraduationCap,
-  Download
+  Download,
+  Database,
+  Terminal,
+  Play,
+  Copy,
+  Check,
+  Upload
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -60,7 +66,49 @@ const CustomTooltip = ({ active, payload }) => {
 };
 
 const InsightsView = () => {
-  const { insights, resetApp, setIsChatOpen, fileInfo } = useApp();
+  const { 
+    insights, 
+    resetApp, 
+    setIsChatOpen, 
+    fileInfo,
+    sqlQuery,
+    setSqlQuery,
+    sqlResults,
+    setSqlResults,
+    sqlLoading,
+    sqlError,
+    runSqlQuery,
+    uploadFile,
+    analyseData
+  } = useApp();
+
+  const [tempQuery, setTempQuery] = React.useState('');
+  const [copied, setCopied] = React.useState(false);
+  const [showUploader, setShowUploader] = React.useState(false);
+  const [localLoading, setLocalLoading] = React.useState(false);
+  const fileInputRef = React.useRef(null);
+
+  const handleFileImport = async (e) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setLocalLoading(true);
+      try {
+        await uploadFile(file);
+        await analyseData();
+      } catch (err) {
+        alert("Failed to upload CSV: " + err.message);
+      } finally {
+        setLocalLoading(false);
+        setShowUploader(false);
+      }
+    }
+  };
+
+  const handleQuerySubmit = (e) => {
+    e.preventDefault();
+    if (!tempQuery.trim() || sqlLoading) return;
+    runSqlQuery(tempQuery);
+  };
 
   if (!insights) {
     return (
@@ -109,8 +157,8 @@ const InsightsView = () => {
     document.body.removeChild(link);
   };
 
-  // Chart gradient variables
-  const colors = ['#4fc3f7', '#64b5f6', '#9575cd', '#b388ff', '#ea80fc'];
+  // Chart colors aligned with Beach White & English Blue theme
+  const colors = ['#1b3a5b', '#2b4c7e', '#4a607a', '#6b7280', '#9ca3af'];
 
   return (
     <div className="flex-1 w-full max-w-6xl mx-auto px-4 py-8 flex flex-col space-y-8 animate-card-entrance">
@@ -152,6 +200,49 @@ const InsightsView = () => {
             Query AI Agent
           </button>
         </div>
+      </div>
+
+      {/* Subtle Import Document Section */}
+      <div className="glass-card p-3.5 flex flex-col space-y-2.5">
+        <div 
+          onClick={() => setShowUploader(!showUploader)}
+          className="flex items-center justify-between cursor-pointer text-gray-500 hover:text-electricBlue transition-all"
+        >
+          <div className="flex items-center space-x-2.5 text-xs font-bold uppercase tracking-wider">
+            <Upload className="w-4 h-4 text-accentViolet" />
+            <span>Import/Upload New CSV Document</span>
+          </div>
+          <span className="text-xs text-gray-400 font-mono font-semibold">
+            {showUploader ? '▲ Close' : '▼ Expand'}
+          </span>
+        </div>
+        
+        {showUploader && (
+          <div 
+            onClick={() => fileInputRef.current.click()}
+            className="pt-2 border-t border-gray-100 flex flex-col items-center justify-center p-6 border-2 border-dashed border-gray-200 rounded-xl bg-gray-50/50 hover:bg-gray-50/80 transition-all cursor-pointer"
+          >
+            <input 
+              type="file"
+              ref={fileInputRef}
+              accept=".csv"
+              onChange={handleFileImport}
+              className="hidden"
+            />
+            {localLoading ? (
+              <div className="flex items-center space-x-2 text-xs font-semibold text-electricBlue">
+                <div className="w-4 h-4 border-2 border-electricBlue border-t-transparent rounded-full animate-spin" />
+                <span>Loading & Parsing Telemetry Data...</span>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center space-y-1.5 text-center">
+                <Upload className="w-6 h-6 text-electricBlue animate-bounce" />
+                <span className="text-xs font-semibold text-white">Click to Select CSV Telemetry File</span>
+                <span className="text-[10px] text-gray-400 font-medium">Accepts standard .csv table vectors</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* KPI Cards Grid */}
@@ -218,6 +309,150 @@ const InsightsView = () => {
         </div>
       </div>
 
+      {/* AI SQL Query Console */}
+      <div className="glass-card p-6 flex flex-col space-y-4">
+        <div className="flex items-center justify-between border-b border-electricBlue/15 pb-4">
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 bg-electricBlue/10 border border-electricBlue/25 rounded-xl">
+              <Database className="w-5 h-5 text-electricBlue text-glow-blue" />
+            </div>
+            <div>
+              <h4 className="text-base font-semibold uppercase tracking-widest text-white">
+                🚀 AI Text-to-SQL Query Console
+              </h4>
+              <p className="text-xs text-gray-400 mt-1">
+                Ask a question in natural language to query the student telemetry database, or write direct SQL queries.
+              </p>
+            </div>
+          </div>
+          <Sparkles className="w-5 h-5 text-mintGreen text-glow-mint hidden sm:block animate-pulse" />
+        </div>
+
+        {/* Input & Form */}
+        <form onSubmit={handleQuerySubmit} className="flex flex-col sm:flex-row gap-3">
+          <input
+            type="text"
+            value={tempQuery}
+            onChange={(e) => setTempQuery(e.target.value)}
+            placeholder="e.g., Show top 5 students by GPA or SELECT name, gpa FROM students WHERE gpa > 9.0"
+            className="flex-1 bg-white/[0.03] border border-electricBlue/15 focus:border-electricBlue/40 focus:bg-white/[0.06] rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-electricBlue/30 transition-all font-medium"
+          />
+          <button
+            type="submit"
+            disabled={sqlLoading || !tempQuery.trim()}
+            className="flex items-center justify-center gap-2 px-6 py-3 text-sm font-semibold rounded-xl bg-gradient-to-r from-electricBlue to-accentViolet text-spaceBg hover:brightness-110 active:scale-95 disabled:opacity-40 shadow-[0_0_15px_rgba(79,195,247,0.2)] transition-all font-semibold"
+          >
+            {sqlLoading ? (
+              <Activity className="w-4 h-4 animate-spin text-spaceBg" />
+            ) : (
+              <Play className="w-4 h-4 text-spaceBg fill-current" />
+            )}
+            <span>Run Query</span>
+          </button>
+        </form>
+
+        {/* Suggestion Template Pills */}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-gray-500 font-semibold uppercase tracking-wider">Try Asking:</span>
+          {[
+            "Who has the highest GPA?",
+            "Average attendance in Computer Science",
+            "Show students with attendance < 50%",
+            "List top 5 exam scores in Engineering"
+          ].map((sample, idx) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => {
+                setTempQuery(sample);
+                runSqlQuery(sample);
+              }}
+              className="px-3 py-1.5 bg-white border border-gray-200 text-gray-500 hover:text-electricBlue hover:border-electricBlue hover:bg-gray-50 rounded-lg transition-all font-medium"
+            >
+              {sample}
+            </button>
+          ))}
+        </div>
+
+        {/* Results Panel */}
+        {sqlResults && (
+          <div className="bg-[#05060d] border border-electricBlue/10 rounded-xl overflow-hidden p-4 space-y-4 animate-card-entrance">
+            
+            {/* Generated SQL info */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/[0.02] border border-white/5 p-3 rounded-lg text-xs font-mono text-gray-400">
+              <div className="flex items-center gap-2 overflow-hidden">
+                <Terminal className="w-4 h-4 text-accentViolet flex-shrink-0" />
+                <span className="text-glow-violet text-accentViolet font-semibold flex-shrink-0">Generated SQL:</span>
+                <span className="text-white select-all truncate">{sqlResults.sql_query}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(sqlResults.sql_query);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+                className="flex items-center gap-1 text-[10px] bg-white/[0.04] hover:bg-white/[0.08] border border-white/5 hover:border-white/10 px-2 py-1 rounded transition-all text-gray-400 hover:text-white flex-shrink-0"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-mintGreen" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copied ? 'Copied' : 'Copy'}</span>
+              </button>
+            </div>
+
+            {/* Answer interpretation */}
+            <div className="flex items-start gap-2.5 text-sm leading-relaxed border-b border-white/5 pb-3">
+              <Sparkles className="w-4 h-4 text-mintGreen text-glow-mint mt-0.5 flex-shrink-0" />
+              <div>
+                <span className="font-semibold text-white">Result Answer: </span>
+                <span className="text-gray-300 font-medium">{sqlResults.answer}</span>
+                <span className="block text-[11px] text-gray-500 mt-1 font-mono">{sqlResults.explanation}</span>
+              </div>
+            </div>
+
+            {/* Data Table */}
+            {sqlResults.records && sqlResults.records.length > 0 ? (
+              <div className="overflow-x-auto max-h-60 border border-white/[0.04] rounded-lg">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-[#0b0c16] border-b border-white/10 text-gray-400 font-semibold uppercase tracking-wider">
+                      {sqlResults.columns.map((col, cIdx) => (
+                        <th key={cIdx} className="px-4 py-3 font-mono">
+                          {col.replace('_pct', ' %').replace('_score', ' Score').replace('_', ' ').toUpperCase()}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sqlResults.records.map((row, rIdx) => (
+                      <tr 
+                        key={rIdx} 
+                        className="border-b border-white/[0.04] hover:bg-white/[0.02] text-gray-200 transition-all font-mono"
+                      >
+                        {sqlResults.columns.map((col, cIdx) => (
+                          <td key={cIdx} className="px-4 py-2.5">
+                            {row[col] === null || row[col] === undefined
+                              ? 'N/A'
+                              : typeof row[col] === 'number'
+                              ? row[col] % 1 === 0
+                                ? row[col]
+                                : row[col].toFixed(2)
+                              : row[col].toString()}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-center py-6 text-gray-500 text-xs">
+                No database records matched this query.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Analytics 2-Column Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
@@ -241,22 +476,22 @@ const InsightsView = () => {
               >
                 <defs>
                   <linearGradient id="barGrad" x1="0" y1="0" x2="1" y2="0">
-                    <stop offset="0%" stopColor="#b388ff" stopOpacity={0.25} />
-                    <stop offset="100%" stopColor="#4fc3f7" stopOpacity={0.95} />
+                    <stop offset="0%" stopColor="#4a607a" stopOpacity={0.25} />
+                    <stop offset="100%" stopColor="#1b3a5b" stopOpacity={0.95} />
                   </linearGradient>
                 </defs>
                 <XAxis 
                   type="number" 
                   domain={[0, 100]} 
-                  stroke="rgba(255,255,255,0.3)"
-                  tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 10, fontFamily: 'Space Grotesk' }}
+                  stroke="rgba(27, 58, 91, 0.2)"
+                  tick={{ fill: '#4a607a', fontSize: 10, fontFamily: 'Inter' }}
                   gridArea=""
                 />
                 <YAxis 
                   type="category" 
                   dataKey="name" 
-                  stroke="rgba(255,255,255,0.3)"
-                  tick={{ fill: 'rgba(255,255,255,0.85)', fontSize: 10, fontFamily: 'Space Grotesk' }}
+                  stroke="rgba(27, 58, 91, 0.2)"
+                  tick={{ fill: '#1b3a5b', fontSize: 10, fontFamily: 'Inter' }}
                   width={110}
                 />
                 <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(255, 255, 255, 0.02)' }} />
